@@ -18,6 +18,8 @@
 		"typescript": "^5.8.3"
 	},
 	"dependencies": {
-		"obsidian": "latest"
+		"heic2any": "^0.0.4",
+		"obsidian": "latest",
+		"utif2": "^4.1.0"
 	}
 }
