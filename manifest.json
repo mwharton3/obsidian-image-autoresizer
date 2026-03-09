@@ -1,0 +1,9 @@
+{
+	"id": "image-autoresizer",
+	"name": "Image Auto Resizer",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Automatically converts pasted/dropped images to JPG and resizes them with configurable dimensions and compression.",
+	"author": "mwharton",
+	"isDesktopOnly": false
+}
