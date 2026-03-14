@@ -29,8 +29,6 @@ export class ImageAutoResizerSettingTab extends PluginSettingTab {
 		const {containerEl} = this;
 		containerEl.empty();
 
-		containerEl.createEl('h2', {text: 'Image Auto Resizer Settings'});
-
 		new Setting(containerEl)
 			.setName('Output format')
 			.setDesc('WebP produces smaller files at equivalent quality. JPEG has wider compatibility outside of Obsidian.')
