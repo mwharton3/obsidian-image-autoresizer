@@ -1,4 +1,4 @@
-import {MarkdownView, Notice, Plugin, TFile, TFolder} from 'obsidian';
+import {Editor, MarkdownView, Notice, Plugin, TFile, TFolder} from 'obsidian';
 import {DEFAULT_SETTINGS, ImageAutoResizerSettings, ImageAutoResizerSettingTab, OutputFormat} from "./settings";
 import heic2any from 'heic2any';
 import * as UTIF from 'utif2';
@@ -10,6 +10,18 @@ const DECODE_IMAGE_EXTENSIONS = new Set(['heic', 'heif', 'tif', 'tiff']);
 
 const ALL_IMAGE_EXTENSIONS = new Set([...NATIVE_IMAGE_EXTENSIONS, ...DECODE_IMAGE_EXTENSIONS]);
 
+// Map MIME types to extensions for clipboard/drop files
+const MIME_TO_EXT: Record<string, string> = {
+	'image/png': 'png',
+	'image/jpeg': 'jpg',
+	'image/webp': 'webp',
+	'image/bmp': 'bmp',
+	'image/heic': 'heic',
+	'image/heif': 'heif',
+	'image/tiff': 'tiff',
+	'image/tif': 'tif',
+};
+
 export default class ImageAutoResizerPlugin extends Plugin {
 	settings: ImageAutoResizerSettings;
 	private processing = new Set<string>();
@@ -18,6 +30,25 @@ export default class ImageAutoResizerPlugin extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new ImageAutoResizerSettingTab(this.app, this));
 
+		// Intercept paste events to handle images before Obsidian inserts the wrong link
+		this.registerEvent(
+			this.app.workspace.on('editor-paste', (evt: ClipboardEvent, editor: Editor, view: MarkdownView) => {
+				if (this.handleEditorImages(evt.clipboardData, editor, view)) {
+					evt.preventDefault();
+				}
+			})
+		);
+
+		// Intercept drop events similarly
+		this.registerEvent(
+			this.app.workspace.on('editor-drop', (evt: DragEvent, editor: Editor, view: MarkdownView) => {
+				if (this.handleEditorImages(evt.dataTransfer, editor, view)) {
+					evt.preventDefault();
+				}
+			})
+		);
+
+		// Fallback for images added via other means (file manager, sync, etc.)
 		this.registerEvent(
 			this.app.vault.on('create', (file) => {
 				if (file instanceof TFile) {
@@ -47,6 +78,146 @@ export default class ImageAutoResizerPlugin extends Plugin {
 		return this.settings.outputFormat === 'webp' ? 'webp' : 'jpg';
 	}
 
+	/**
+	 * Handle images from paste/drop events. Returns true if images were found
+	 * (meaning the caller should preventDefault).
+	 */
+	private handleEditorImages(
+		dataTransfer: DataTransfer | null,
+		editor: Editor,
+		view: MarkdownView
+	): boolean {
+		if (!dataTransfer) return false;
+
+		const imageFiles: File[] = [];
+		for (let i = 0; i < dataTransfer.files.length; i++) {
+			const file = dataTransfer.files.item(i);
+			if (file && file.type.startsWith('image/')) {
+				imageFiles.push(file);
+			}
+		}
+
+		if (imageFiles.length === 0) return false;
+
+		// Process each image asynchronously
+		for (const file of imageFiles) {
+			this.processDroppedImage(file, editor, view);
+		}
+
+		return true;
+	}
+
+	/**
+	 * Process a single image from paste/drop: convert, save with correct extension,
+	 * and insert the correct embed link directly.
+	 */
+	private async processDroppedImage(file: File, editor: Editor, view: MarkdownView): Promise<void> {
+		try {
+			const data = await file.arrayBuffer();
+			const ext = this.getExtFromFile(file);
+			if (!ext || !ALL_IMAGE_EXTENSIONS.has(ext)) return;
+
+			const processed = await this.processImageData(data, ext);
+
+			// Generate a filename based on the original name or a timestamp
+			const baseName = file.name
+				? file.name.replace(/\.[^.]+$/, '')
+				: `Pasted image ${Date.now()}`;
+
+			// Use Obsidian's API to resolve the correct attachment path (handles
+			// deduplication, folder creation, and respects user's attachment settings)
+			const sourcePath = view.file?.path;
+			const filePath = await this.app.fileManager.getAvailablePathForAttachment(
+				`${baseName}.${this.outputExt}`,
+				sourcePath
+			);
+			const fileName = filePath.split('/').pop()!;
+
+			// Mark as processing so the create handler doesn't double-process
+			this.processing.add(filePath);
+			try {
+				await this.app.vault.createBinary(filePath, processed.arrayBuffer);
+			} finally {
+				this.processing.delete(filePath);
+			}
+
+			// Insert the correct embed link at the cursor
+			const linkText = `![[${fileName}]]\n`;
+			editor.replaceSelection(linkText);
+
+			const saved = data.byteLength - processed.arrayBuffer.byteLength;
+			const formatLabel = this.outputExt.toUpperCase();
+			if (saved > 0) {
+				new Notice(`Image resized: saved ${Math.round(saved / 1024)}KB`);
+			} else {
+				new Notice(`Image converted to ${formatLabel} (${processed.width}x${processed.height})`);
+			}
+		} catch (e) {
+			console.error('Image Auto Resizer: failed to process pasted/dropped image', e);
+			new Notice('Image Auto Resizer: failed to process image');
+		}
+	}
+
+	private getExtFromFile(file: File): string | null {
+		// Try to get extension from filename first
+		if (file.name) {
+			const match = file.name.match(/\.([^.]+)$/);
+			if (match) {
+				const ext = match[1]!.toLowerCase();
+				if (ALL_IMAGE_EXTENSIONS.has(ext)) return ext;
+			}
+		}
+		// Fall back to MIME type
+		return MIME_TO_EXT[file.type] || null;
+	}
+
+	/**
+	 * Core image processing: decode, resize, and compress.
+	 * Returns the processed ArrayBuffer and dimensions.
+	 */
+	private async processImageData(
+		data: ArrayBuffer,
+		ext: string
+	): Promise<{arrayBuffer: ArrayBuffer; width: number; height: number}> {
+		const {maxWidth, maxHeight, quality, outputFormat} = this.settings;
+
+		let img: HTMLImageElement | ImageBitmap;
+
+		if (DECODE_IMAGE_EXTENSIONS.has(ext)) {
+			img = await this.decodeSpecialFormat(data, ext);
+		} else {
+			const blob = new Blob([data], {type: `image/${ext === 'jpg' ? 'jpeg' : ext}`});
+			img = await this.loadImage(blob);
+		}
+
+		const {width, height} = img;
+
+		// Skip conversion if already in target format and within size limits
+		const isTargetFormat = (outputFormat === 'jpeg' && (ext === 'jpg' || ext === 'jpeg'))
+			|| (outputFormat === 'webp' && ext === 'webp');
+		if (isTargetFormat && width <= maxWidth && height <= maxHeight) {
+			this.cleanupImage(img);
+			return {arrayBuffer: data, width, height};
+		}
+
+		// Calculate scaled dimensions maintaining aspect ratio
+		let newWidth = width;
+		let newHeight = height;
+		if (width > maxWidth || height > maxHeight) {
+			const ratio = Math.min(maxWidth / width, maxHeight / height);
+			newWidth = Math.round(width * ratio);
+			newHeight = Math.round(height * ratio);
+		}
+
+		const arrayBuffer = await this.compressToOutput(img, newWidth, newHeight, quality);
+		this.cleanupImage(img);
+
+		return {arrayBuffer, width: newWidth, height: newHeight};
+	}
+
+	/**
+	 * Fallback handler for images added via file manager, sync, or other non-editor means.
+	 */
 	private async handleNewImage(file: TFile): Promise<void> {
 		const ext = file.extension.toLowerCase();
 		if (!ALL_IMAGE_EXTENSIONS.has(ext)) return;
@@ -57,45 +228,18 @@ export default class ImageAutoResizerPlugin extends Plugin {
 		let newPath = file.path;
 		try {
 			const data = await this.app.vault.readBinary(file);
-			const {maxWidth, maxHeight, quality, outputFormat} = this.settings;
 
-			let img: HTMLImageElement | ImageBitmap;
+			const processed = await this.processImageData(data, ext);
 
-			if (DECODE_IMAGE_EXTENSIONS.has(ext)) {
-				img = await this.decodeSpecialFormat(data, ext);
-			} else {
-				const blob = new Blob([data], {type: `image/${ext === 'jpg' ? 'jpeg' : ext}`});
-				img = await this.loadImage(blob);
-			}
-
-			const {width, height} = img;
-
-			// Skip if already in target format and within size limits
-			const isTargetFormat = (outputFormat === 'jpeg' && (ext === 'jpg' || ext === 'jpeg'))
-				|| (outputFormat === 'webp' && ext === 'webp');
-			if (isTargetFormat && width <= maxWidth && height <= maxHeight) {
-				this.cleanupImage(img);
-				return;
-			}
-
-			// Calculate scaled dimensions maintaining aspect ratio
-			let newWidth = width;
-			let newHeight = height;
-			if (width > maxWidth || height > maxHeight) {
-				const ratio = Math.min(maxWidth / width, maxHeight / height);
-				newWidth = Math.round(width * ratio);
-				newHeight = Math.round(height * ratio);
-			}
-
-			const arrayBuffer = await this.compressToOutput(img, newWidth, newHeight, quality);
-			this.cleanupImage(img);
+			// If no conversion needed (same buffer returned), skip
+			if (processed.arrayBuffer === data) return;
 
 			// Determine the new file path
 			const basePath = file.path.replace(/\.[^.]+$/, '');
 			newPath = `${basePath}.${this.outputExt}`;
 
 			if (newPath === file.path) {
-				await this.app.vault.modifyBinary(file, arrayBuffer);
+				await this.app.vault.modifyBinary(file, processed.arrayBuffer);
 			} else {
 				const folder = file.parent;
 				if (folder && folder.path !== '/') {
@@ -110,7 +254,7 @@ export default class ImageAutoResizerPlugin extends Plugin {
 				}
 
 				this.processing.add(newPath);
-				await this.app.vault.createBinary(newPath, arrayBuffer);
+				await this.app.vault.createBinary(newPath, processed.arrayBuffer);
 
 				// Update references in the active note before deleting the old file
 				const oldName = file.name;
@@ -120,12 +264,12 @@ export default class ImageAutoResizerPlugin extends Plugin {
 				await this.app.vault.delete(file);
 			}
 
-			const saved = data.byteLength - arrayBuffer.byteLength;
+			const saved = data.byteLength - processed.arrayBuffer.byteLength;
 			const formatLabel = this.outputExt.toUpperCase();
 			if (saved > 0) {
 				new Notice(`Image resized: saved ${Math.round(saved / 1024)}KB`);
 			} else {
-				new Notice(`Image converted to ${formatLabel} (${newWidth}x${newHeight})`);
+				new Notice(`Image converted to ${formatLabel} (${processed.width}x${processed.height})`);
 			}
 		} catch (e) {
 			console.error('Image Auto Resizer: failed to process image', e);
