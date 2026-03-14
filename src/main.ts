@@ -119,10 +119,13 @@ export default class ImageAutoResizerPlugin extends Plugin {
 
 			const processed = await this.processImageData(data, ext);
 
-			// Generate a filename based on the original name or a timestamp
-			const baseName = file.name
-				? file.name.replace(/\.[^.]+$/, '')
-				: `Pasted image ${Date.now()}`;
+			// Generate a filename based on the original name or a timestamp.
+			// On mobile (iOS), pasted images often arrive with a generic name
+			// like "image.png" — replace these with a readable timestamp.
+			const rawName = file.name ? file.name.replace(/\.[^.]+$/, '') : '';
+			const baseName = this.isGenericImageName(rawName)
+				? `Pasted image ${this.formatTimestamp()}`
+				: rawName;
 
 			// Use Obsidian's API to resolve the correct attachment path (handles
 			// deduplication, folder creation, and respects user's attachment settings)
@@ -234,22 +237,26 @@ export default class ImageAutoResizerPlugin extends Plugin {
 			// If no conversion needed (same buffer returned), skip
 			if (processed.arrayBuffer === data) return;
 
-			// Determine the new file path
-			const basePath = file.path.replace(/\.[^.]+$/, '');
-			newPath = `${basePath}.${this.outputExt}`;
+			// Determine the new file path, replacing generic names with a timestamp
+			const oldBaseName = file.basename;
+			const newBaseName = this.isGenericImageName(oldBaseName)
+				? `Pasted image ${this.formatTimestamp()}`
+				: oldBaseName;
+			const folder = file.parent?.path === '/' ? '' : `${file.parent?.path}/`;
+			newPath = `${folder}${newBaseName}.${this.outputExt}`;
 
 			if (newPath === file.path) {
 				await this.app.vault.modifyBinary(file, processed.arrayBuffer);
 			} else {
-				const folder = file.parent;
-				if (folder && folder.path !== '/') {
-					await this.ensureFolder(folder.path);
+				const parentFolder = file.parent;
+				if (parentFolder && parentFolder.path !== '/') {
+					await this.ensureFolder(parentFolder.path);
 				}
 
 				// Handle name collisions by appending a counter
 				let counter = 1;
 				while (this.app.vault.getAbstractFileByPath(newPath)) {
-					newPath = `${basePath}-${counter}.${this.outputExt}`;
+					newPath = `${folder}${newBaseName}-${counter}.${this.outputExt}`;
 					counter++;
 				}
 
@@ -406,6 +413,22 @@ export default class ImageAutoResizerPlugin extends Plugin {
 		if (updated !== content) {
 			editor.setValue(updated);
 		}
+	}
+
+	/**
+	 * Detect generic image names that mobile/clipboard pastes produce
+	 * (e.g. "image", "Image", "photo", "IMG_1234").
+	 */
+	private isGenericImageName(name: string): boolean {
+		if (!name) return true;
+		const lower = name.toLowerCase().trim();
+		return lower === 'image' || lower === 'photo' || lower === 'pasted image';
+	}
+
+	private formatTimestamp(): string {
+		const d = new Date();
+		const pad = (n: number) => String(n).padStart(2, '0');
+		return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 	}
 
 	private async ensureFolder(path: string): Promise<void> {
