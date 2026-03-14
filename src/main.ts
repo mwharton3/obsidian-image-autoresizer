@@ -49,13 +49,18 @@ export default class ImageAutoResizerPlugin extends Plugin {
 		);
 
 		// Fallback for images added via other means (file manager, sync, etc.)
-		this.registerEvent(
-			this.app.vault.on('create', (file) => {
-				if (file instanceof TFile) {
-					this.handleNewImage(file);
-				}
-			})
-		);
+		// Wait until the workspace is ready so we skip the initial vault scan —
+		// otherwise every pre-existing image gets reprocessed on app launch.
+		const registerCreateHandler = () => {
+			this.registerEvent(
+				this.app.vault.on('create', (file) => {
+					if (file instanceof TFile) {
+						this.handleNewImage(file);
+					}
+				})
+			);
+		};
+		this.app.workspace.onLayoutReady(registerCreateHandler);
 	}
 
 	onunload() {
