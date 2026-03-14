@@ -1,7 +1,7 @@
 {
 	"id": "image-autoresizer",
 	"name": "Image Auto Resizer",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"minAppVersion": "0.15.0",
 	"description": "Automatically converts and resizes pasted/dropped images to WebP or JPEG with configurable dimensions and compression.",
 	"author": "mwharton",
