@@ -1,5 +1,5 @@
 import {Editor, MarkdownView, Notice, Plugin, TFile, TFolder} from 'obsidian';
-import {DEFAULT_SETTINGS, ImageAutoResizerSettings, ImageAutoResizerSettingTab, OutputFormat} from "./settings";
+import {DEFAULT_SETTINGS, ImageAutoResizerSettings, ImageAutoResizerSettingTab} from "./settings";
 import heic2any from 'heic2any';
 import * as UTIF from 'utif2';
 
@@ -55,7 +55,7 @@ export default class ImageAutoResizerPlugin extends Plugin {
 			this.registerEvent(
 				this.app.vault.on('create', (file) => {
 					if (file instanceof TFile) {
-						this.handleNewImage(file);
+						void this.handleNewImage(file);
 					}
 				})
 			);
@@ -83,6 +83,10 @@ export default class ImageAutoResizerPlugin extends Plugin {
 		return this.settings.outputFormat === 'webp' ? 'webp' : 'jpg';
 	}
 
+	private get outputLabel(): string {
+		return this.settings.outputFormat === 'webp' ? 'WebP' : 'JPEG';
+	}
+
 	/**
 	 * Handle images from paste/drop events. Returns true if images were found
 	 * (meaning the caller should preventDefault).
@@ -106,7 +110,7 @@ export default class ImageAutoResizerPlugin extends Plugin {
 
 		// Process each image asynchronously
 		for (const file of imageFiles) {
-			this.processDroppedImage(file, editor, view);
+			void this.processDroppedImage(file, editor, view);
 		}
 
 		return true;
@@ -154,15 +158,14 @@ export default class ImageAutoResizerPlugin extends Plugin {
 			editor.replaceSelection(linkText);
 
 			const saved = data.byteLength - processed.arrayBuffer.byteLength;
-			const formatLabel = this.outputExt.toUpperCase();
 			if (saved > 0) {
-				new Notice(`Image resized: saved ${Math.round(saved / 1024)}KB`);
+				new Notice(`Image resized: saved ${Math.round(saved / 1024)} kB`);
 			} else {
-				new Notice(`Image converted to ${formatLabel} (${processed.width}x${processed.height})`);
+				new Notice(`Image converted to ${this.outputLabel} (${processed.width}x${processed.height})`);
 			}
 		} catch (e) {
 			console.error('Image Auto Resizer: failed to process pasted/dropped image', e);
-			new Notice('Image Auto Resizer: failed to process image');
+			new Notice('Failed to process image');
 		}
 	}
 
@@ -271,17 +274,16 @@ export default class ImageAutoResizerPlugin extends Plugin {
 				// Update references in the active note before deleting the old file
 				const oldName = file.name;
 				const newName = newPath.split('/').pop()!;
-				await this.updateReferences(oldName, newName);
+				this.updateReferences(oldName, newName);
 
-				await this.app.vault.delete(file);
+				await this.app.fileManager.trashFile(file);
 			}
 
 			const saved = data.byteLength - processed.arrayBuffer.byteLength;
-			const formatLabel = this.outputExt.toUpperCase();
 			if (saved > 0) {
-				new Notice(`Image resized: saved ${Math.round(saved / 1024)}KB`);
+				new Notice(`Image resized: saved ${Math.round(saved / 1024)} kB`);
 			} else {
-				new Notice(`Image converted to ${formatLabel} (${processed.width}x${processed.height})`);
+				new Notice(`Image converted to ${this.outputLabel} (${processed.width}x${processed.height})`);
 			}
 		} catch (e) {
 			console.error('Image Auto Resizer: failed to process image', e);
@@ -408,7 +410,7 @@ export default class ImageAutoResizerPlugin extends Plugin {
 		});
 	}
 
-	private async updateReferences(oldName: string, newName: string): Promise<void> {
+	private updateReferences(oldName: string, newName: string): void {
 		const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (!markdownView || markdownView.file?.extension !== 'md') return;
 

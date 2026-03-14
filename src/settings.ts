@@ -31,9 +31,9 @@ export class ImageAutoResizerSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Output format')
-			.setDesc('WebP produces smaller files at equivalent quality. JPEG has wider compatibility outside of Obsidian.')
+			.setDesc('Choose between smaller file sizes or wider compatibility outside Obsidian.')
 			.addDropdown(drop => drop
-				.addOption('webp', 'WebP (recommended)')
+				.addOption('webp', 'Webp (recommended)')
 				.addOption('jpeg', 'JPEG')
 				.setValue(this.plugin.settings.outputFormat)
 				.onChange(async (value) => {
